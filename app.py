@@ -3,19 +3,13 @@ Webhook para Google RCS Business Messaging
 ==========================================
 
 Este servicio:
-1. Pasa la verificación de webhook de Google (clientToken + secret).
-2. Recibe mensajes RCS en formato JSON plano.
-3. Responde automáticamente usando la API de Google Business Messages.
-4. Usa una Service Account montada como Secret File en Render.
-
-Requisitos en Render:
-- Secret File: service-account.json → en /etc/secrets/service-account.json
-- Environment Variable: CLIENT_TOKEN (el que defines en Google Console)
-"""
-
-"""
-Webhook para Google RCS Business Messaging
-==========================================
+- Pasa la verificación de webhook de Google.
+- Recibe mensajes RCS en JSON plano.
+- Responde SOLO a mensajes de texto reales.
+- Usa Service Account desde /etc/secrets/service-account.json.
+- Requiere en Render:
+    - Secret File: service-account.json
+    - Env Var: CLIENT_TOKEN
 """
 
 import os
@@ -31,14 +25,16 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Configuración
 CLIENT_TOKEN = os.environ.get("CLIENT_TOKEN", "").strip()
 SECRET_FILE_PATH = "/etc/secrets/service-account.json"
 
 
 def send_rcs_text(conversation_id: str, text: str) -> bool:
+    """Envía un mensaje de texto por RCS usando Service Account."""
     try:
         if not os.path.exists(SECRET_FILE_PATH):
-            logger.error("❌ No se encontró el archivo de credenciales")
+            logger.error("❌ No se encontró service-account.json")
             return False
 
         with open(SECRET_FILE_PATH, "r") as f:
@@ -67,25 +63,53 @@ def send_rcs_text(conversation_id: str, text: str) -> bool:
         return True
 
     except Exception as e:
-        logger.error(f"❌ Falló el envío: {e}")
+        logger.error(f"❌ Error al enviar mensaje: {e}")
         return False
+
+
+@app.route("/", methods=["GET", "HEAD"])
+def root():
+    """Health check para Render."""
+    return "OK", 200
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Endpoint detallado de salud."""
+    return {
+        "status": "healthy",
+        "client_token_set": bool(CLIENT_TOKEN),
+        "service_account_available": os.path.exists(SECRET_FILE_PATH)
+    }
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    """Maneja verificación y mensajes RCS."""
     try:
         payload = request.get_json()
-        logger.info(f"📨 Payload recibido: {payload}")  # ← ESTA LÍNEA ES CLAVE    
-        if not payload:
+        if not 
+            logger.warning("⚠️ Solicitud sin JSON válido")
             return "Invalid JSON", 400
 
-        if "clientToken" in payload and "secret" in payload:
+        # 🔍 Log completo del payload (clave para depurar)
+        logger.info(f"PAYLOAD COMPLETO:\n{json.dumps(payload, indent=2)}")
+
+        # 🟢 Verificación de Google
+        if "clientToken" in payload and "secret" in 
             if payload["clientToken"] == CLIENT_TOKEN:
-                logger.info("✅ Webhook verificado")
+                logger.info("✅ Webhook verificado por Google")
                 return Response(payload["secret"], status=200, mimetype="text/plain")
             else:
+                logger.warning("❌ clientToken no coincide")
                 return "Invalid clientToken", 403
 
+        # 🚫 Ignorar eventos que no son mensajes de texto
+        if "message" not in 
+            logger.info("ℹ️ Ignorado: no es mensaje de texto. Claves: %s", list(payload.keys()))
+            return "OK", 200
+
+        # ✅ Es un mensaje de texto → responder
         conversation_id = payload.get("conversationId")
         if not conversation_id:
             logger.warning("⚠️ Mensaje sin conversationId")
@@ -95,22 +119,10 @@ def webhook():
         return "OK", 200
 
     except Exception as e:
-        logger.error(f"💥 Error: {e}", exc_info=True)
+        logger.error(f"💥 Error no controlado: {e}", exc_info=True)
         return "Internal error", 500
 
 
-@app.route("/health", methods=["GET"])
-def health():
-    return {
-        "status": "healthy",
-        "client_token_set": bool(CLIENT_TOKEN),
-        "service_account_available": os.path.exists(SECRET_FILE_PATH)
-    }
-
-@app.route("/", methods=["GET", "HEAD"])
-def root():
-    return "OK", 200
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)

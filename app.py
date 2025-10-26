@@ -106,6 +106,9 @@ def health():
         "service_account_available": os.path.exists(SECRET_FILE_PATH)
     }
 
+@app.route("/", methods=["GET", "HEAD"])
+def root():
+    return "OK", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

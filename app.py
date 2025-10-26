@@ -25,10 +25,10 @@ def send_rcs_text(conversation_id: str, text: str) -> bool:
         with open(SECRET_FILE_PATH, "r") as f:
             sa_info = json.load(f)
 
+        # ✅ Eliminado 'scopes' — ya no es compatible
         credentials = jwt.Credentials.from_service_account_info(
             sa_info,
-            audience="https://businessmessages.googleapis.com/",
-            scopes=["https://www.googleapis.com/auth/businessmessages"]
+            audience="https://businessmessages.googleapis.com/"
         )
         credentials.refresh(Request())
 

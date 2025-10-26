@@ -88,7 +88,7 @@ def webhook():
     """Maneja verificación y mensajes RCS."""
     try:
         payload = request.get_json()
-        if not 
+        if not payload:
             logger.warning("⚠️ Solicitud sin JSON válido")
             return "Invalid JSON", 400
 

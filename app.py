@@ -85,8 +85,8 @@ def webhook():
     """
     try:
         payload = request.get_json()
-        if not 
-            return "Invalid JSON", 400
+        if not payload:
+         return "Invalid JSON", 400
 
         # ─── 1. Verificación de webhook ───────────────────────────────
         if "clientToken" in payload and "secret" in 

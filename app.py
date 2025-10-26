@@ -5,7 +5,6 @@ from flask import Flask, request, Response
 
 app = Flask(__name__)
 
-# Leer variables directamente de entorno (Render las inyecta)
 CLIENT_TOKEN = os.environ.get('CLIENT_TOKEN', '')
 N8N_WEBHOOK_URL = os.environ.get('N8N_WEBHOOK_URL', 'https://n8n-6jex.onrender.com/webhook/rcs-in')
 
@@ -16,17 +15,15 @@ logger = logging.getLogger(__name__)
 def webhook():
     try:
         data = request.get_json()
-        if not 
+        if not data:
             return "Invalid JSON", 400
 
-        # 🔑 Verificación de Google: clientToken + secret
-        if 'clientToken' in data and 'secret' in 
+        if 'clientToken' in data and 'secret' in data:
             if data['clientToken'] == CLIENT_TOKEN:
                 return Response(data['secret'], status=200, mimetype='text/plain')
             else:
                 return "Invalid clientToken", 403
 
-        # 📨 Mensaje real → reenviar a n8n
         import requests
         requests.post(N8N_WEBHOOK_URL, json=data, timeout=5)
         return "OK", 200

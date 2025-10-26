@@ -1,3 +1,6 @@
+
+
+```python
 """
 Webhook para Google RCS Business Messaging
 ==========================================
@@ -96,7 +99,7 @@ def webhook():
         logger.info(f"PAYLOAD COMPLETO:\n{json.dumps(payload, indent=2)}")
 
         # 🟢 Verificación de Google
-        if "clientToken" in payload and "secret" in 
+        if "clientToken" in payload and "secret" in payload:
             if payload["clientToken"] == CLIENT_TOKEN:
                 logger.info("✅ Webhook verificado por Google")
                 return Response(payload["secret"], status=200, mimetype="text/plain")
@@ -105,7 +108,7 @@ def webhook():
                 return "Invalid clientToken", 403
 
         # 🚫 Ignorar eventos que no son mensajes de texto
-        if "message" not in 
+        if "message" not in payload:
             logger.info("ℹ️ Ignorado: no es mensaje de texto. Claves: %s", list(payload.keys()))
             return "OK", 200
 

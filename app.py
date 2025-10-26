@@ -1,6 +1,3 @@
-
-
-```python
 """
 Webhook para Google RCS Business Messaging
 ==========================================

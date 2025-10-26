@@ -75,6 +75,7 @@ def send_rcs_text(conversation_id: str, text: str) -> bool:
 def webhook():
     try:
         payload = request.get_json()
+        logger.info(f"📨 Payload recibido: {payload}")  # ← ESTA LÍNEA ES CLAVE    
         if not payload:
             return "Invalid JSON", 400
 

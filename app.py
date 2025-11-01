@@ -25,6 +25,7 @@ from flask import Flask, request, Response
 import requests
 from google.auth import jwt
 from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 
 # ============================================================================
 # CONFIGURACIÓN INICIAL
@@ -44,17 +45,49 @@ logger = logging.getLogger(__name__)
 CLIENT_TOKEN = os.environ.get("CLIENT_TOKEN", "").strip()  # Token para verificación del webhook
 SECRET_FILE_PATH = "/etc/secrets/service-account.json"     # Ruta al archivo de credenciales de Google
 
+# Scopes necesarios para la API de RCS Business Messaging
+RCS_SCOPES = [
+    "https://www.googleapis.com/auth/rcsbusinessmessaging"
+]
+
 # ============================================================================
 # FUNCIONES DE UTILIDAD PARA RCS
 # ============================================================================
+
+def get_credentials():
+    """
+    Obtiene las credenciales de autenticación para la API de RCS.
+    
+    Returns:
+        google.auth.credentials.Credentials: Credenciales válidas para la API de RCS
+    """
+    try:
+        # Verificar que existe el archivo de credenciales
+        if not os.path.exists(SECRET_FILE_PATH):
+            logger.error("❌ No se encontró service-account.json")
+            return None
+            
+        # Cargar credenciales del service account
+        credentials = service_account.Credentials.from_service_account_file(
+            SECRET_FILE_PATH,
+            scopes=RCS_SCOPES
+        )
+        
+        # Refrescar para obtener un token válido
+        credentials.refresh(Request())
+        
+        return credentials
+    except Exception as e:
+        logger.error(f"❌ Error al obtener credenciales: {e}")
+        return None
 
 def send_rcs_text(sender_phone: str, text: str, agent_id: str) -> bool:
     """
     Envía un mensaje de texto RCS al usuario.
     
     Esta función maneja toda la lógica de autenticación y envío de mensajes RCS:
-    1. Lee las credenciales del service account de Google
-    2. Genera un token JWT para autenticación
+    1. Obtiene las credenciales de autenticación
+    2. Genera un token de acceso para autenticación
     3. Construye y envía el mensaje usando la API de RCS
     
     Args:
@@ -64,43 +97,25 @@ def send_rcs_text(sender_phone: str, text: str, agent_id: str) -> bool:
         
     Returns:
         bool: True si el mensaje se envió correctamente, False si hubo algún error
-    
-    Nota importante:
-        RCS no requiere crear conversaciones como Business Messages.
-        Los mensajes se envían directamente al número de teléfono.
     """
     try:
-        # ====== PASO 1: Verificar que existen las credenciales ======
-        if not os.path.exists(SECRET_FILE_PATH):
-            logger.error("❌ No se encontró service-account.json")
+        # ====== PASO 1: Obtener credenciales de autenticación ======
+        credentials = get_credentials()
+        if not credentials:
             return False
-
-        # ====== PASO 2: Cargar credenciales del Service Account ======
-        with open(SECRET_FILE_PATH, "r") as f:
-            sa_info = json.load(f)
-
-        # ====== PASO 3: Generar token JWT para autenticación ======
-        # El 'audience' debe ser la URL base de la API de RCS
-        credentials = jwt.Credentials.from_service_account_info(
-            sa_info,
-            audience="https://rcsbusinessmessaging.googleapis.com/"
-        )
-        # Refrescar para obtener un token válido
-        credentials.refresh(Request())
-        token = credentials.token
-
-        # ====== PASO 4: Preparar headers HTTP con autenticación ======
+            
+        # ====== PASO 2: Preparar headers HTTP con autenticación ======
         headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {credentials.token}",
             "Content-Type": "application/json"
         }
 
-        # ====== PASO 5: Construir la URL del endpoint de RCS ======
+        # ====== PASO 3: Construir la URL del endpoint de RCS ======
         # Formato: /v1/phones/{número}/agentMessages
         # El número debe incluir el '+' (ej: +34610172116)
         url = f"https://rcsbusinessmessaging.googleapis.com/v1/phones/{sender_phone}/agentMessages"
         
-        # ====== PASO 6: Construir el cuerpo del mensaje ======
+        # ====== PASO 4: Construir el cuerpo del mensaje ======
         # RCS usa el formato 'contentMessage' para mensajes de contenido
         message_body = {
             "contentMessage": {
@@ -112,7 +127,7 @@ def send_rcs_text(sender_phone: str, text: str, agent_id: str) -> bool:
         logger.info(f"📤 Enviando mensaje RCS a: {url}")
         logger.info(f"📝 Cuerpo del mensaje: {json.dumps(message_body, indent=2)}")
         
-        # ====== PASO 7: Enviar el mensaje mediante POST ======
+        # ====== PASO 5: Enviar el mensaje mediante POST ======
         resp = requests.post(
             url, 
             headers=headers, 

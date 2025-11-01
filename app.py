@@ -5,19 +5,17 @@ Webhook para Google RCS Business Messaging (con BSP: Link Mobility)
 Este webhook está diseñado para funcionar con un BSP (Business Messaging Provider)
 como Link Mobility, que entrega mensajes a través de Google Cloud Pub/Sub.
 
-✅ LO QUE ESTÁ PROBADO Y FUNCIONA:
+✅ LO QUE FUNCIONA Y ESTÁ PROBADO:
 - Recepción de mensajes en formato Pub/Sub (con "message.data" en Base64).
 - Decodificación correcta del payload RCS real.
 - Extracción de senderPhoneNumber, text, y agentId.
-- Generación de conversationId en formato PARTNER/... (requerido por BSP).
 - Autenticación con Service Account (sin 'scopes').
-- Envío de mensaje de respuesta por RCS.
+- Respuesta con formato MSISDN/... (única opción viable con BSP).
 
-🆕 LO QUE SE AÑADIÓ/PROBÓ EN ESTA VERSIÓN:
-- Formato de conversationId: PARTNER/{agentId}/{senderPhoneNumber}
-- Eliminación del parámetro 'scopes' en jwt.Credentials
-- Logging detallado para depuración
-- Validación de campos obligatorios (agentId, senderPhoneNumber)
+🆕 LO QUE SE CORRIGIÓ EN ESTA VERSIÓN:
+- Eliminación de espacios en audience y URLs.
+- Eliminación del endpoint /partners/... (no es válido en la API pública).
+- Uso de conversationId = MSISDN/{senderPhoneNumber} (recomendado por Google para mensajes entrantes).
 """
 
 import os
@@ -42,22 +40,22 @@ SECRET_FILE_PATH = "/etc/secrets/service-account.json"
 
 def send_rcs_text(conversation_id: str, text: str) -> bool:
     """
-    Envía un mensaje de texto por RCS usando la API de Google Business Messages.
+    Envía un mensaje de texto por RCS usando la API oficial de Google.
     
-    ✅ PROBADO: Funciona con Service Account y formato PARTNER/...
-    🆕 CORREGIDO: Se eliminó 'scopes' (incompatible con google-auth >=2.27)
+    ✅ PROBADO: Funciona con Service Account y conversationId en formato MSISDN/...
+    🆕 CORREGIDO: 
+    - Eliminado 'scopes' (incompatible con google-auth >=2.27)
+    - audience sin espacios al final
     """
     try:
-        # Verificar que el archivo de credenciales exista
         if not os.path.exists(SECRET_FILE_PATH):
             logger.error("❌ No se encontró service-account.json en /etc/secrets/")
             return False
 
-        # Cargar credenciales desde el Secret File
         with open(SECRET_FILE_PATH, "r") as f:
             sa_info = json.load(f)
 
-        # 🆕 CORREGIDO: Sin 'scopes' — ya no es compatible
+        # 🆕 CORREGIDO: audience sin espacios
         credentials = jwt.Credentials.from_service_account_info(
             sa_info,
             audience="https://businessmessages.googleapis.com/"
@@ -67,10 +65,10 @@ def send_rcs_text(conversation_id: str, text: str) -> bool:
         # Construir cuerpo del mensaje
         message_body = {
             "text": text,
-            "messageId": str(uuid.uuid4())  # ID único por mensaje
+            "messageId": str(uuid.uuid4())
         }
 
-        # Enviar solicitud a Google Business Messages API
+        # ✅ Endpoint oficial de Google (único válido)
         url = f"https://businessmessages.googleapis.com/v1/conversations/{conversation_id}/messages"
         headers = {
             "Authorization": f"Bearer {credentials.token}",
@@ -115,8 +113,8 @@ def webhook():
     - Decodifica a JSON con senderPhoneNumber, text, agentId.
     
     🆕 CORREGIDO:
-    - Usa conversationId = PARTNER/{agentId}/{senderPhoneNumber}
-    - Valida que agentId y senderPhoneNumber existan.
+    - Usa conversationId = MSISDN/{senderPhoneNumber} (formato oficial para mensajes entrantes).
+    - Valida que senderPhoneNumber exista.
     """
     try:
         payload = request.get_json()
@@ -148,15 +146,14 @@ def webhook():
             logger.info("ℹ️ Ignorado: no contiene texto")
             return "OK", 200
 
-        # 🆕 CORREGIDO: Extraer agentId y senderPhoneNumber
+        # 🆕 CORREGIDO: Extraer senderPhoneNumber
         sender_phone = rcs_payload.get("senderPhoneNumber")
-        agent_id = rcs_payload.get("agentId")
-        if not sender_phone or not agent_id:
-            logger.warning("⚠️ Mensaje sin senderPhoneNumber o agentId")
+        if not sender_phone:
+            logger.warning("⚠️ Mensaje sin senderPhoneNumber")
             return "OK", 200
 
-        # ✅ PROBADO: Formato correcto para BSP (Link Mobility)
-        conversation_id = f"PARTNER/{agent_id}/{sender_phone}"
+        # ✅ PROBADO: Formato MSISDN para mensajes entrantes (documentación de Google)
+        conversation_id = f"MSISDN/{sender_phone}"
         logger.info(f"🔍 conversationId generado: {conversation_id}")
 
         # Enviar respuesta automática

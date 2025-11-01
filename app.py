@@ -33,7 +33,19 @@ SECRET_FILE_PATH = "/etc/secrets/service-account.json"
 
 def send_rcs_text(conversation_id: str, text: str) -> bool:
     """
-    Envía un mensaje, creando la conversación si es necesario.
+    Envía un mensaje de texto RCS, creando la conversación si es necesario.
+    
+    Esta función:
+    1. Verifica si la conversación existe mediante una petición GET
+    2. Si la conversación no existe (error 404), la crea con una petición POST
+    3. Envía el mensaje de texto a la conversación existente o recién creada
+    
+    Args:
+        conversation_id (str): Identificador de la conversación en formato MSISDN/+número
+        text (str): Texto del mensaje a enviar
+        
+    Returns:
+        bool: True si el mensaje se envió correctamente, False en caso contrario
     """
     try:
         if not os.path.exists(SECRET_FILE_PATH):
@@ -99,11 +111,24 @@ def send_rcs_text(conversation_id: str, text: str) -> bool:
 
 @app.route("/", methods=["GET", "HEAD"])
 def root():
+    """
+    Endpoint básico para verificación de que el servicio está funcionando.
+    
+    Returns:
+        str: Mensaje "OK" con código de estado 200
+    """
     return "OK", 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
+    """
+    Endpoint de salud que verifica el estado del servicio y la disponibilidad
+    de recursos necesarios (token de cliente y archivo de cuenta de servicio).
+    
+    Returns:
+        dict: Diccionario con el estado del servicio y disponibilidad de recursos
+    """
     return {
         "status": "healthy",
         "client_token_set": bool(CLIENT_TOKEN),
@@ -113,6 +138,18 @@ def health():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+    """
+    Maneja las solicitudes webhook entrantes de Google RCS Business Messaging.
+    
+    Esta función:
+    1. Procesa el payload entrante (directo o codificado en base64 para Pub/Sub)
+    2. Verifica si es una solicitud de validación de webhook (clientToken/secret)
+    3. Extrae el número de teléfono del remitente para formar el conversationId
+    4. Envía una respuesta automática usando la función send_rcs_text
+    
+    Returns:
+        Response: Respuesta HTTP adecuada según el procesamiento
+    """
     try:
         payload = request.get_json()
         if not payload: 
@@ -129,7 +166,7 @@ def webhook():
             rcs_payload = payload
 
         # Verificación de Google
-        if "clientToken" in rcs_payload and "secret" in 
+        if "clientToken" in rcs_payload and "secret" in rcs_payload:
             if rcs_payload["clientToken"] == CLIENT_TOKEN:
                 return Response(rcs_payload["secret"], status=200, mimetype="text/plain")
             else:
@@ -156,5 +193,11 @@ def webhook():
 
 
 if __name__ == "__main__":
+    """
+    Punto de entrada de la aplicación.
+    
+    Inicia el servidor Flask en el puerto especificado (por defecto 10000)
+    y escucha en todas las interfaces de red (0.0.0.0).
+    """
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)

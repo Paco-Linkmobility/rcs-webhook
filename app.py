@@ -1,21 +1,16 @@
 """
-Webhook para Google RCS Business Messaging (con BSP: Link Mobility)
-==================================================================
+Webhook para Google RCS Business Messaging (Prueba con creación de conversación)
+===============================================================================
 
-Este webhook está diseñado para funcionar con un BSP (Business Messaging Provider)
-como Link Mobility, que entrega mensajes a través de Google Cloud Pub/Sub.
+Esta versión prueba la hipótesis de que el error 404 se debe a que la conversación
+no está "activa" para el agente, y debe crearse explícitamente antes de enviar
+el primer mensaje.
 
-✅ LO QUE FUNCIONA Y ESTÁ PROBADO:
-- Recepción de mensajes en formato Pub/Sub (con "message.data" en Base64).
-- Decodificación correcta del payload RCS real.
-- Extracción de senderPhoneNumber, text, y agentId.
-- Autenticación con Service Account (sin 'scopes').
-- Respuesta con formato MSISDN/... (única opción viable con BSP).
-
-🆕 LO QUE SE CORRIGIÓ EN ESTA VERSIÓN:
-- Eliminación de espacios en audience y URLs.
-- Eliminación del endpoint /partners/... (no es válido en la API pública).
-- Uso de conversationId = MSISDN/{senderPhoneNumber} (recomendado por Google para mensajes entrantes).
+✅ Características:
+- Usa formato MSISDN/+phone (correcto para mensajes entrantes).
+- Verifica existencia de conversación con GET.
+- Crea conversación con POST si no existe (404).
+- Corrige espacios en audience y URLs.
 """
 
 import os
@@ -28,73 +23,87 @@ import requests
 from google.auth import jwt
 from google.auth.transport.requests import Request
 
-# Configuración básica de la app Flask
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Variables de entorno
 CLIENT_TOKEN = os.environ.get("CLIENT_TOKEN", "").strip()
 SECRET_FILE_PATH = "/etc/secrets/service-account.json"
 
 
 def send_rcs_text(conversation_id: str, text: str) -> bool:
     """
-    Envía un mensaje de texto por RCS usando la API oficial de Google.
-    
-    ✅ PROBADO: Funciona con Service Account y conversationId en formato MSISDN/...
-    🆕 CORREGIDO: 
-    - Eliminado 'scopes' (incompatible con google-auth >=2.27)
-    - audience sin espacios al final
+    Envía un mensaje, creando la conversación si es necesario.
     """
     try:
         if not os.path.exists(SECRET_FILE_PATH):
-            logger.error("❌ No se encontró service-account.json en /etc/secrets/")
+            logger.error("❌ No se encontró service-account.json")
             return False
 
         with open(SECRET_FILE_PATH, "r") as f:
             sa_info = json.load(f)
 
-        # 🆕 CORREGIDO: audience sin espacios
+        # ✅ Corregido: audience SIN espacios
         credentials = jwt.Credentials.from_service_account_info(
             sa_info,
             audience="https://businessmessages.googleapis.com/"
         )
         credentials.refresh(Request())
+        token = credentials.token
 
-        # Construir cuerpo del mensaje
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        # 1. Verificar si la conversación existe
+        convo_url = f"https://businessmessages.googleapis.com/v1/{conversation_id}"
+        logger.info(f"🔍 Verificando conversación: {convo_url}")
+        resp = requests.get(convo_url, headers=headers, timeout=10)
+
+        # 2. Si no existe (404), crearla
+        if resp.status_code == 404:
+            logger.warning("⚠️ Conversación no encontrada. Creándola...")
+            create_url = "https://businessmessages.googleapis.com/v1/conversations"
+            create_body = {
+                "conversationId": conversation_id,
+                "businessInfo": {"businessName": "MediBot"}
+            }
+            create_resp = requests.post(create_url, headers=headers, json=create_body, timeout=10)
+            create_resp.raise_for_status()
+            logger.info("✅ Conversación creada exitosamente.")
+
+        # Si hay otro error (403, 500, etc.), lo lanzamos
+        resp.raise_for_status()
+
+        # 3. Enviar el mensaje
+        message_url = f"{convo_url}/messages"
         message_body = {
             "text": text,
             "messageId": str(uuid.uuid4())
         }
-
-        # ✅ Endpoint oficial de Google (único válido)
-        url = f"https://businessmessages.googleapis.com/v1/conversations/{conversation_id}/messages"
-        headers = {
-            "Authorization": f"Bearer {credentials.token}",
-            "Content-Type": "application/json"
-        }
-        resp = requests.post(url, headers=headers, json=message_body, timeout=10)
-        resp.raise_for_status()
-        logger.info(f"✅ Mensaje enviado a conversationId: {conversation_id}")
+        msg_resp = requests.post(message_url, headers=headers, json=message_body, timeout=10)
+        msg_resp.raise_for_status()
+        logger.info(f"✅ Mensaje enviado a: {conversation_id}")
         return True
 
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code
+        error_text = e.response.text
+        logger.error(f"❌ HTTPError {status}: {error_text}")
+        return False
     except Exception as e:
-        logger.error(f"❌ Error al enviar mensaje: {e}")
+        logger.error(f"💥 Error inesperado: {e}", exc_info=True)
         return False
 
 
-# Ruta raíz para health check de Render
 @app.route("/", methods=["GET", "HEAD"])
 def root():
-    """Health check básico para Render."""
     return "OK", 200
 
 
-# Ruta de salud detallada
 @app.route("/health", methods=["GET"])
 def health():
-    """Endpoint para verificar configuración."""
     return {
         "status": "healthy",
         "client_token_set": bool(CLIENT_TOKEN),
@@ -102,70 +111,50 @@ def health():
     }
 
 
-# Ruta principal: recibe mensajes de Link Mobility (Pub/Sub)
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """
-    Maneja mensajes entrantes de Link Mobility (formato Pub/Sub).
-    
-    ✅ PROBADO: 
-    - Recibe payload con "message.data" en Base64.
-    - Decodifica a JSON con senderPhoneNumber, text, agentId.
-    
-    🆕 CORREGIDO:
-    - Usa conversationId = MSISDN/{senderPhoneNumber} (formato oficial para mensajes entrantes).
-    - Valida que senderPhoneNumber exista.
-    """
     try:
         payload = request.get_json()
-        if not payload:
-            logger.warning("⚠️ Solicitud sin JSON válido")
+        if not 
             return "Invalid JSON", 400
 
         logger.info(f"PAYLOAD RECIBIDO:\n{json.dumps(payload, indent=2)}")
 
-        # 🆕 PROBADO: Detectar y decodificar mensaje de Pub/Sub (Link Mobility)
+        # Decodificar Pub/Sub (Link Mobility)
         if "message" in payload and "data" in payload["message"]:
-            decoded_bytes = base64.b64decode(payload["message"]["data"])
-            rcs_payload = json.loads(decoded_bytes.decode("utf-8"))
-            logger.info(f"📩 Mensaje RCS decodificado:\n{json.dumps(rcs_payload, indent=2)}")
+            decoded = base64.b64decode(payload["message"]["data"]).decode("utf-8")
+            rcs_payload = json.loads(decoded)
+            logger.info(f"📩 Mensaje decodificado:\n{json.dumps(rcs_payload, indent=2)}")
         else:
             rcs_payload = payload
 
-        # Manejo de verificación de Google (solo si aplica)
-        if "clientToken" in rcs_payload and "secret" in rcs_payload:
+        # Verificación de Google
+        if "clientToken" in rcs_payload and "secret" in 
             if rcs_payload["clientToken"] == CLIENT_TOKEN:
-                logger.info("✅ Webhook verificado por Google")
                 return Response(rcs_payload["secret"], status=200, mimetype="text/plain")
             else:
-                logger.warning("❌ clientToken no coincide")
                 return "Invalid clientToken", 403
 
-        # Solo procesar mensajes con texto
+        # Solo mensajes de texto
         if "text" not in rcs_payload:
-            logger.info("ℹ️ Ignorado: no contiene texto")
             return "OK", 200
 
-        # 🆕 CORREGIDO: Extraer senderPhoneNumber
         sender_phone = rcs_payload.get("senderPhoneNumber")
         if not sender_phone:
-            logger.warning("⚠️ Mensaje sin senderPhoneNumber")
             return "OK", 200
 
-        # ✅ PROBADO: Formato MSISDN para mensajes entrantes (documentación de Google)
+        # ✅ Usa MSISDN (formato correcto para mensajes entrantes)
         conversation_id = f"MSISDN/{sender_phone}"
-        logger.info(f"🔍 conversationId generado: {conversation_id}")
+        logger.info(f"🔍 Usando conversationId: {conversation_id}")
 
-        # Enviar respuesta automática
         send_rcs_text(conversation_id, "¡Hola! 👋 Soy MediBot. ¿En qué puedo ayudarte?")
         return "OK", 200
 
     except Exception as e:
-        logger.error(f"💥 Error no controlado: {e}", exc_info=True)
+        logger.error(f"💥 Error en webhook: {e}", exc_info=True)
         return "Internal error", 500
 
 
-# Iniciar la app (Render usa el puerto 10000 por defecto)
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)

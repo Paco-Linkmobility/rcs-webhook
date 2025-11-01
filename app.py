@@ -115,7 +115,7 @@ def health():
 def webhook():
     try:
         payload = request.get_json()
-        if not 
+        if not payload: 
             return "Invalid JSON", 400
 
         logger.info(f"PAYLOAD RECIBIDO:\n{json.dumps(payload, indent=2)}")

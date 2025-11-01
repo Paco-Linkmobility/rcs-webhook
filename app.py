@@ -1,16 +1,19 @@
 """
-Webhook para Google RCS Business Messaging (Prueba con creación de conversación)
-===============================================================================
+Webhook para Google RCS Business Messaging
+===========================================
 
-Esta versión prueba la hipótesis de que el error 404 se debe a que la conversación
-no está "activa" para el agente, y debe crearse explícitamente antes de enviar
-el primer mensaje.
+Este webhook recibe mensajes de usuarios a través de Google RCS (Rich Communication Services)
+y responde automáticamente. RCS es el protocolo de mensajería enriquecida que reemplaza
+al SMS tradicional.
 
-✅ Características:
-- Usa formato MSISDN:+phone (correcto para mensajes entrantes).
-- Verifica existencia de conversación con GET.
-- Crea conversación con PATCH si no existe (404).
-- Corrige espacios en audience y URLs.
+Flujo del sistema:
+1. Usuario envía mensaje RCS → Link Mobility (proveedor) → Google Pub/Sub → Este webhook
+2. Webhook procesa el mensaje y responde usando la API de RCS
+3. Respuesta va al usuario a través del mismo canal
+
+Configuración requerida:
+- CLIENT_TOKEN: Token de verificación para validar que el webhook es legítimo
+- service-account.json: Credenciales de servicio de Google Cloud
 """
 
 import os
@@ -23,104 +26,133 @@ import requests
 from google.auth import jwt
 from google.auth.transport.requests import Request
 
+# ============================================================================
+# CONFIGURACIÓN INICIAL
+# ============================================================================
+
+# Crear aplicación Flask
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
+
+# Configurar sistema de logging para debugging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-CLIENT_TOKEN = os.environ.get("CLIENT_TOKEN", "").strip()
-SECRET_FILE_PATH = "/etc/secrets/service-account.json"
+# Variables de entorno y configuración
+CLIENT_TOKEN = os.environ.get("CLIENT_TOKEN", "").strip()  # Token para verificación del webhook
+SECRET_FILE_PATH = "/etc/secrets/service-account.json"     # Ruta al archivo de credenciales de Google
 
+# ============================================================================
+# FUNCIONES DE UTILIDAD PARA RCS
+# ============================================================================
 
-def send_rcs_text(conversation_id: str, text: str, agent_id: str) -> bool:
+def send_rcs_text(sender_phone: str, text: str, agent_id: str) -> bool:
     """
-    Envía un mensaje de texto RCS, creando la conversación si es necesario.
+    Envía un mensaje de texto RCS al usuario.
     
-    Esta función:
-    1. Verifica si la conversación existe mediante una petición GET
-    2. Si la conversación no existe (error 404), la crea con una petición PATCH
-    3. Envía el mensaje de texto a la conversación existente o recién creada
+    Esta función maneja toda la lógica de autenticación y envío de mensajes RCS:
+    1. Lee las credenciales del service account de Google
+    2. Genera un token JWT para autenticación
+    3. Construye y envía el mensaje usando la API de RCS
     
     Args:
-        conversation_id (str): Identificador de la conversación en formato MSISDN:+número
+        sender_phone (str): Número de teléfono del destinatario en formato internacional (+34...)
         text (str): Texto del mensaje a enviar
-        agent_id (str): ID del agente que manejará la conversación
+        agent_id (str): ID del agente RCS que envía el mensaje
         
     Returns:
-        bool: True si el mensaje se envió correctamente, False en caso contrario
+        bool: True si el mensaje se envió correctamente, False si hubo algún error
+    
+    Nota importante:
+        RCS no requiere crear conversaciones como Business Messages.
+        Los mensajes se envían directamente al número de teléfono.
     """
     try:
+        # ====== PASO 1: Verificar que existen las credenciales ======
         if not os.path.exists(SECRET_FILE_PATH):
             logger.error("❌ No se encontró service-account.json")
             return False
 
+        # ====== PASO 2: Cargar credenciales del Service Account ======
         with open(SECRET_FILE_PATH, "r") as f:
             sa_info = json.load(f)
 
-        # ✅ Corregido: audience SIN espacios
+        # ====== PASO 3: Generar token JWT para autenticación ======
+        # El 'audience' debe ser la URL base de la API de RCS
         credentials = jwt.Credentials.from_service_account_info(
             sa_info,
-            audience="https://businessmessages.googleapis.com/"
+            audience="https://rcsbusinessmessaging.googleapis.com/"
         )
+        # Refrescar para obtener un token válido
         credentials.refresh(Request())
         token = credentials.token
 
+        # ====== PASO 4: Preparar headers HTTP con autenticación ======
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
 
-        # 1. Verificar si la conversación existe
-        # ✅ Corregido: Usar el formato correcto para la URL
-        # El formato correcto es: v1/conversations/MSISDN:+número
-        convo_url = f"https://businessmessages.googleapis.com/v1/conversations/{conversation_id}"
-        logger.info(f"🔍 Verificando conversación: {convo_url}")
-        resp = requests.get(convo_url, headers=headers, timeout=10)
-
-        # 2. Si no existe (404), crearla
-        if resp.status_code == 404:
-            logger.warning("⚠️ Conversación no encontrada. Creándola...")
-            # ✅ Corregido: Usar PATCH con el formato correcto y el cuerpo adecuado
-            # La URL para crear debe incluir el conversationId completo
-            create_body = {
-                "agent": agent_id,
-                "businessInfo": {"businessName": "MediBot"},
-                "contextualSuggestion": {"chips": []}
-            }
-            create_resp = requests.patch(convo_url, headers=headers, json=create_body, timeout=10)
-            create_resp.raise_for_status()
-            logger.info("✅ Conversación creada exitosamente.")
-
-        # Si hay otro error (403, 500, etc.), lo lanzamos
-        resp.raise_for_status()
-
-        # 3. Enviar el mensaje
-        message_url = f"{convo_url}/messages"
+        # ====== PASO 5: Construir la URL del endpoint de RCS ======
+        # Formato: /v1/phones/{número}/agentMessages
+        # El número debe incluir el '+' (ej: +34610172116)
+        url = f"https://rcsbusinessmessaging.googleapis.com/v1/phones/{sender_phone}/agentMessages"
+        
+        # ====== PASO 6: Construir el cuerpo del mensaje ======
+        # RCS usa el formato 'contentMessage' para mensajes de contenido
         message_body = {
-            "text": text,
-            "messageId": str(uuid.uuid4())
+            "contentMessage": {
+                "text": text  # El texto del mensaje va dentro de contentMessage
+            }
         }
-        msg_resp = requests.post(message_url, headers=headers, json=message_body, timeout=10)
-        msg_resp.raise_for_status()
-        logger.info(f"✅ Mensaje enviado a: {conversation_id}")
+        
+        # Log para debugging
+        logger.info(f"📤 Enviando mensaje RCS a: {url}")
+        logger.info(f"📝 Cuerpo del mensaje: {json.dumps(message_body, indent=2)}")
+        
+        # ====== PASO 7: Enviar el mensaje mediante POST ======
+        resp = requests.post(
+            url, 
+            headers=headers, 
+            json=message_body, 
+            timeout=10  # Timeout de 10 segundos para evitar bloqueos
+        )
+        
+        # Lanzar excepción si el status HTTP no es 2xx
+        resp.raise_for_status()
+        
+        logger.info(f"✅ Mensaje enviado exitosamente a: {sender_phone}")
         return True
 
     except requests.exceptions.HTTPError as e:
+        # Error HTTP (400, 401, 403, 404, 500, etc.)
         status = e.response.status_code
         error_text = e.response.text
         logger.error(f"❌ HTTPError {status}: {error_text}")
         return False
     except Exception as e:
+        # Cualquier otro error inesperado
         logger.error(f"💥 Error inesperado: {e}", exc_info=True)
         return False
 
+# ============================================================================
+# ENDPOINTS DEL WEBHOOK
+# ============================================================================
 
 @app.route("/", methods=["GET", "HEAD"])
 def root():
     """
-    Endpoint básico para verificación de que el servicio está funcionando.
+    Endpoint raíz para verificación básica del servicio.
+    
+    Este endpoint es útil para:
+    - Verificar que el servicio está corriendo
+    - Health checks de Render.com
+    - Pruebas manuales rápidas
     
     Returns:
-        str: Mensaje "OK" con código de estado 200
+        tuple: ("OK", 200) indicando que el servicio está activo
     """
     return "OK", 200
 
@@ -128,11 +160,17 @@ def root():
 @app.route("/health", methods=["GET"])
 def health():
     """
-    Endpoint de salud que verifica el estado del servicio y la disponibilidad
-    de recursos necesarios (token de cliente y archivo de cuenta de servicio).
+    Endpoint de salud detallado para monitoreo.
+    
+    Proporciona información sobre:
+    - Estado general del servicio
+    - Si el CLIENT_TOKEN está configurado
+    - Si el archivo de credenciales está disponible
+    
+    Útil para debugging y monitoreo en producción.
     
     Returns:
-        dict: Diccionario con el estado del servicio y disponibilidad de recursos
+        dict: JSON con información de estado del servicio
     """
     return {
         "status": "healthy",
@@ -144,68 +182,135 @@ def health():
 @app.route("/webhook", methods=["POST"])
 def webhook():
     """
-    Maneja las solicitudes webhook entrantes de Google RCS Business Messaging.
+    Endpoint principal que recibe y procesa los mensajes RCS.
     
-    Esta función:
-    1. Procesa el payload entrante (directo o codificado en base64 para Pub/Sub)
-    2. Verifica si es una solicitud de validación de webhook (clientToken/secret)
-    3. Extrae el número de teléfono del remitente para formar el conversationId
-    4. Envía una respuesta automática usando la función send_rcs_text
+    Este endpoint maneja todo el flujo de procesamiento de mensajes:
+    
+    1. RECEPCIÓN: Recibe el payload de Google Pub/Sub
+    2. DECODIFICACIÓN: Extrae el mensaje RCS del envelope de Pub/Sub
+    3. VERIFICACIÓN: Valida el webhook si es una solicitud de verificación
+    4. PROCESAMIENTO: Extrae información del remitente
+    5. RESPUESTA: Envía una respuesta automática al usuario
+    
+    Formato del payload de Pub/Sub:
+    {
+        "subscription": "projects/.../subscriptions/...",
+        "message": {
+            "data": "base64_encoded_rcs_message",
+            "attributes": {...},
+            "messageId": "...",
+            "publishTime": "..."
+        }
+    }
+    
+    Formato del mensaje RCS decodificado:
+    {
+        "senderPhoneNumber": "+34610172116",
+        "messageId": "...",
+        "sendTime": "...",
+        "text": "Mensaje del usuario",
+        "agentId": "link_mobility_..._agent@rbm.goog"
+    }
     
     Returns:
-        Response: Respuesta HTTP adecuada según el procesamiento
+        tuple: Respuesta HTTP apropiada según el procesamiento
     """
     try:
+        # ====== PASO 1: Obtener y validar el JSON del request ======
         payload = request.get_json()
         if not payload: 
+            logger.warning("⚠️ Request sin JSON válido")
             return "Invalid JSON", 400
 
+        # Log del payload completo para debugging
         logger.info(f"PAYLOAD RECIBIDO:\n{json.dumps(payload, indent=2)}")
 
-        # Decodificar Pub/Sub (Link Mobility)
+        # ====== PASO 2: Decodificar el mensaje de Pub/Sub ======
+        # Los mensajes de RCS vienen envueltos en un mensaje de Pub/Sub
+        # El contenido real está codificado en base64 en el campo 'data'
         if "message" in payload and "data" in payload["message"]:
+            # Decodificar de base64 a string
             decoded = base64.b64decode(payload["message"]["data"]).decode("utf-8")
+            # Parsear el JSON del mensaje RCS
             rcs_payload = json.loads(decoded)
             logger.info(f"📩 Mensaje decodificado:\n{json.dumps(rcs_payload, indent=2)}")
         else:
+            # Si no es un mensaje de Pub/Sub, asumir que es el payload directo
             rcs_payload = payload
 
-        # Verificación de Google
+        # ====== PASO 3: Manejar verificación del webhook ======
+        # Google envía una solicitud de verificación cuando se configura el webhook
+        # Debemos responder con el 'secret' que nos envían para confirmar
         if "clientToken" in rcs_payload and "secret" in rcs_payload:
             if rcs_payload["clientToken"] == CLIENT_TOKEN:
+                # Token correcto: devolver el secret para confirmar
+                logger.info("✅ Verificación del webhook exitosa")
                 return Response(rcs_payload["secret"], status=200, mimetype="text/plain")
             else:
+                # Token incorrecto: rechazar
+                logger.warning("⚠️ Token de cliente inválido en verificación")
                 return "Invalid clientToken", 403
 
-        # Solo mensajes de texto
+        # ====== PASO 4: Filtrar solo mensajes de texto ======
+        # Ignorar otros tipos de eventos (entrega, lectura, etc.)
         if "text" not in rcs_payload:
+            logger.info("ℹ️ Evento recibido sin texto, ignorando")
             return "OK", 200
 
-        sender_phone = rcs_payload.get("senderPhoneNumber")
-        agent_id = rcs_payload.get("agentId")  # ✅ Obtener el agentId del payload
+        # ====== PASO 5: Extraer información del remitente ======
+        sender_phone = rcs_payload.get("senderPhoneNumber")  # Número del usuario
+        agent_id = rcs_payload.get("agentId")                # ID del agente RCS
+        message_text = rcs_payload.get("text")               # Texto del mensaje
+        
+        # Validar que tenemos la información necesaria
         if not sender_phone:
+            logger.warning("⚠️ Mensaje sin número de remitente")
             return "OK", 200
 
-        # ✅ Usa MSISDN:+número (formato correcto para mensajes entrantes)
-        # Nota: El formato correcto es MSISDN:+número (con dos puntos, no barra diagonal)
-        conversation_id = f"MSISDN:{sender_phone}"
-        logger.info(f"🔍 Usando conversationId: {conversation_id}")
+        # Log del mensaje recibido
+        logger.info(f"💬 Mensaje recibido de {sender_phone}: {message_text}")
 
-        # ✅ Pasar el agentId a la función send_rcs_text
-        send_rcs_text(conversation_id, "¡Hola! 👋 Soy MediBot. ¿En qué puedo ayudarte?", agent_id)
+        # ====== PASO 6: Enviar respuesta automática ======
+        # Aquí es donde normalmente procesarías el mensaje y generarías una respuesta
+        # Por ahora, enviamos una respuesta genérica de bienvenida
+        response_text = "¡Hola! 👋 Soy MediBot. ¿En qué puedo ayudarte?"
+        
+        # Enviar la respuesta usando la función de RCS
+        success = send_rcs_text(sender_phone, response_text, agent_id)
+        
+        if success:
+            logger.info(f"✅ Respuesta enviada exitosamente a {sender_phone}")
+        else:
+            logger.error(f"❌ Error al enviar respuesta a {sender_phone}")
+
+        # Siempre devolver OK para que Pub/Sub no reintente
         return "OK", 200
 
+    except json.JSONDecodeError as e:
+        # Error al decodificar JSON
+        logger.error(f"❌ Error decodificando JSON: {e}")
+        return "Invalid JSON format", 400
     except Exception as e:
+        # Cualquier otro error inesperado
         logger.error(f"💥 Error en webhook: {e}", exc_info=True)
         return "Internal error", 500
 
+# ============================================================================
+# PUNTO DE ENTRADA DE LA APLICACIÓN
+# ============================================================================
 
 if __name__ == "__main__":
     """
-    Punto de entrada de la aplicación.
+    Punto de entrada cuando se ejecuta el script directamente.
     
-    Inicia el servidor Flask en el puerto especificado (por defecto 10000)
-    y escucha en todas las interfaces de red (0.0.0.0).
+    Configura y lanza el servidor Flask:
+    - Puerto: Usa la variable de entorno PORT (default: 10000)
+    - Host: 0.0.0.0 para aceptar conexiones de cualquier interfaz
+    - Debug: Desactivado en producción (Flask lo maneja automáticamente)
+    
+    Nota: En producción (Render.com), se usa Gunicorn en lugar de
+    el servidor de desarrollo de Flask.
     """
     port = int(os.environ.get("PORT", 10000))
+    logger.info(f"🚀 Iniciando servidor en puerto {port}")
     app.run(host="0.0.0.0", port=port)

@@ -9,7 +9,7 @@ el primer mensaje.
 ✅ Características:
 - Usa formato MSISDN/+phone (correcto para mensajes entrantes).
 - Verifica existencia de conversación con GET.
-- Crea conversación con POST si no existe (404).
+- Crea conversación con PATCH si no existe (404).
 - Corrige espacios en audience y URLs.
 """
 
@@ -31,18 +31,19 @@ CLIENT_TOKEN = os.environ.get("CLIENT_TOKEN", "").strip()
 SECRET_FILE_PATH = "/etc/secrets/service-account.json"
 
 
-def send_rcs_text(conversation_id: str, text: str) -> bool:
+def send_rcs_text(conversation_id: str, text: str, agent_id: str) -> bool:
     """
     Envía un mensaje de texto RCS, creando la conversación si es necesario.
     
     Esta función:
     1. Verifica si la conversación existe mediante una petición GET
-    2. Si la conversación no existe (error 404), la crea con una petición POST
+    2. Si la conversación no existe (error 404), la crea con una petición PATCH
     3. Envía el mensaje de texto a la conversación existente o recién creada
     
     Args:
         conversation_id (str): Identificador de la conversación en formato MSISDN/+número
         text (str): Texto del mensaje a enviar
+        agent_id (str): ID del agente que manejará la conversación
         
     Returns:
         bool: True si el mensaje se envió correctamente, False en caso contrario
@@ -69,19 +70,20 @@ def send_rcs_text(conversation_id: str, text: str) -> bool:
         }
 
         # 1. Verificar si la conversación existe
-        convo_url = f"https://businessmessages.googleapis.com/v1/{conversation_id}"
+        # El formato correcto para la URL es: v1/conversations/MSISDN/+número
+        convo_url = f"https://businessmessages.googleapis.com/v1/conversations/{conversation_id}"
         logger.info(f"🔍 Verificando conversación: {convo_url}")
         resp = requests.get(convo_url, headers=headers, timeout=10)
 
         # 2. Si no existe (404), crearla
         if resp.status_code == 404:
             logger.warning("⚠️ Conversación no encontrada. Creándola...")
-            create_url = "https://businessmessages.googleapis.com/v1/conversations"
+            # ✅ Corregido: Usar PATCH en lugar de POST y URL completa
             create_body = {
-                "conversationId": conversation_id,
+                "agent": agent_id,
                 "businessInfo": {"businessName": "MediBot"}
             }
-            create_resp = requests.post(create_url, headers=headers, json=create_body, timeout=10)
+            create_resp = requests.patch(convo_url, headers=headers, json=create_body, timeout=10)
             create_resp.raise_for_status()
             logger.info("✅ Conversación creada exitosamente.")
 
@@ -177,6 +179,7 @@ def webhook():
             return "OK", 200
 
         sender_phone = rcs_payload.get("senderPhoneNumber")
+        agent_id = rcs_payload.get("agentId")  # ✅ Obtener el agentId del payload
         if not sender_phone:
             return "OK", 200
 
@@ -184,7 +187,8 @@ def webhook():
         conversation_id = f"MSISDN/{sender_phone}"
         logger.info(f"🔍 Usando conversationId: {conversation_id}")
 
-        send_rcs_text(conversation_id, "¡Hola! 👋 Soy MediBot. ¿En qué puedo ayudarte?")
+        # ✅ Pasar el agentId a la función send_rcs_text
+        send_rcs_text(conversation_id, "¡Hola! 👋 Soy MediBot. ¿En qué puedo ayudarte?", agent_id)
         return "OK", 200
 
     except Exception as e:

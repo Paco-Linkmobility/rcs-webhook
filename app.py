@@ -110,12 +110,15 @@ def send_rcs_text(sender_phone: str, text: str, agent_id: str) -> bool:
             "Content-Type": "application/json"
         }
 
-        # ====== PASO 3: Construir la URL del endpoint de RCS ======
-        # Formato: /v1/phones/{número}/agentMessages
-        # El número debe incluir el '+' (ej: +34610172116)
-        url = f"https://rcsbusinessmessaging.googleapis.com/v1/phones/{sender_phone}/agentMessages"
+        # ====== PASO 3: Generar un ID único para el mensaje ======
+        message_id = str(uuid.uuid4())
         
-        # ====== PASO 4: Construir el cuerpo del mensaje ======
+        # ====== PASO 4: Construir la URL del endpoint de RCS con messageId como parámetro ======
+        # Formato: /v1/phones/{número}/agentMessages?messageId={id}
+        # El número debe incluir el '+' (ej: +34610172116)
+        url = f"https://rcsbusinessmessaging.googleapis.com/v1/phones/{sender_phone}/agentMessages?messageId={message_id}"
+        
+        # ====== PASO 5: Construir el cuerpo del mensaje ======
         # RCS usa el formato 'contentMessage' para mensajes de contenido
         message_body = {
             "contentMessage": {
@@ -127,7 +130,7 @@ def send_rcs_text(sender_phone: str, text: str, agent_id: str) -> bool:
         logger.info(f"📤 Enviando mensaje RCS a: {url}")
         logger.info(f"📝 Cuerpo del mensaje: {json.dumps(message_body, indent=2)}")
         
-        # ====== PASO 5: Enviar el mensaje mediante POST ======
+        # ====== PASO 6: Enviar el mensaje mediante POST ======
         resp = requests.post(
             url, 
             headers=headers, 

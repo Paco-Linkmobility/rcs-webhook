@@ -7,7 +7,7 @@ no está "activa" para el agente, y debe crearse explícitamente antes de enviar
 el primer mensaje.
 
 ✅ Características:
-- Usa formato MSISDN/+phone (correcto para mensajes entrantes).
+- Usa formato MSISDN:+phone (correcto para mensajes entrantes).
 - Verifica existencia de conversación con GET.
 - Crea conversación con PATCH si no existe (404).
 - Corrige espacios en audience y URLs.
@@ -41,7 +41,7 @@ def send_rcs_text(conversation_id: str, text: str, agent_id: str) -> bool:
     3. Envía el mensaje de texto a la conversación existente o recién creada
     
     Args:
-        conversation_id (str): Identificador de la conversación en formato MSISDN/+número
+        conversation_id (str): Identificador de la conversación en formato MSISDN:+número
         text (str): Texto del mensaje a enviar
         agent_id (str): ID del agente que manejará la conversación
         
@@ -70,7 +70,8 @@ def send_rcs_text(conversation_id: str, text: str, agent_id: str) -> bool:
         }
 
         # 1. Verificar si la conversación existe
-        # El formato correcto para la URL es: v1/conversations/MSISDN/+número
+        # ✅ Corregido: Usar el formato correcto para la URL
+        # El formato correcto es: v1/conversations/MSISDN:+número
         convo_url = f"https://businessmessages.googleapis.com/v1/conversations/{conversation_id}"
         logger.info(f"🔍 Verificando conversación: {convo_url}")
         resp = requests.get(convo_url, headers=headers, timeout=10)
@@ -78,10 +79,12 @@ def send_rcs_text(conversation_id: str, text: str, agent_id: str) -> bool:
         # 2. Si no existe (404), crearla
         if resp.status_code == 404:
             logger.warning("⚠️ Conversación no encontrada. Creándola...")
-            # ✅ Corregido: Usar PATCH en lugar de POST y URL completa
+            # ✅ Corregido: Usar PATCH con el formato correcto y el cuerpo adecuado
+            # La URL para crear debe incluir el conversationId completo
             create_body = {
                 "agent": agent_id,
-                "businessInfo": {"businessName": "MediBot"}
+                "businessInfo": {"businessName": "MediBot"},
+                "contextualSuggestion": {"chips": []}
             }
             create_resp = requests.patch(convo_url, headers=headers, json=create_body, timeout=10)
             create_resp.raise_for_status()
@@ -183,8 +186,9 @@ def webhook():
         if not sender_phone:
             return "OK", 200
 
-        # ✅ Usa MSISDN (formato correcto para mensajes entrantes)
-        conversation_id = f"MSISDN/{sender_phone}"
+        # ✅ Usa MSISDN:+número (formato correcto para mensajes entrantes)
+        # Nota: El formato correcto es MSISDN:+número (con dos puntos, no barra diagonal)
+        conversation_id = f"MSISDN:{sender_phone}"
         logger.info(f"🔍 Usando conversationId: {conversation_id}")
 
         # ✅ Pasar el agentId a la función send_rcs_text
